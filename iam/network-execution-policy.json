@@ -1,0 +1,241 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadNetworkState",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAccountAttributes",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeVpcAttribute",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeInternetGateways",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ManageNetworkResourcesInProjectAccount",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVpc",
+        "ec2:ModifyVpcAttribute",
+        "ec2:DeleteVpc",
+        "ec2:CreateSubnet",
+        "ec2:ModifySubnetAttribute",
+        "ec2:DeleteSubnet",
+        "ec2:CreateInternetGateway",
+        "ec2:AttachInternetGateway",
+        "ec2:DetachInternetGateway",
+        "ec2:DeleteInternetGateway",
+        "ec2:CreateRouteTable",
+        "ec2:DeleteRouteTable",
+        "ec2:CreateRoute",
+        "ec2:ReplaceRoute",
+        "ec2:DeleteRoute",
+        "ec2:AssociateRouteTable",
+        "ec2:ReplaceRouteTableAssociation",
+        "ec2:DisassociateRouteTable",
+        "ec2:CreateSecurityGroup",
+        "ec2:DeleteSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+        "ec2:ModifySecurityGroupRules",
+        "ec2:CreateTags",
+        "ec2:DeleteTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-2:222234418877:vpc/*",
+        "arn:aws:ec2:us-east-2:222234418877:subnet/*",
+        "arn:aws:ec2:us-east-2:222234418877:internet-gateway/*",
+        "arn:aws:ec2:us-east-2:222234418877:route-table/*",
+        "arn:aws:ec2:us-east-2:222234418877:security-group/*",
+        "arn:aws:ec2:us-east-2:222234418877:security-group-rule/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ReadComputeState",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeImages",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications",
+        "ec2:DescribeVolumeAttribute",
+        "ec2:DescribeKeyPairs"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchInstancesWithExistingNetworkAndImages",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-2:222234418877:instance/*",
+        "arn:aws:ec2:us-east-2:222234418877:volume/*",
+        "arn:aws:ec2:us-east-2:222234418877:network-interface/*",
+        "arn:aws:ec2:us-east-2:222234418877:subnet/*",
+        "arn:aws:ec2:us-east-2:222234418877:security-group/*",
+        "arn:aws:ec2:us-east-2:222234418877:key-pair/key-*",
+        "arn:aws:ec2:us-east-2::image/ami-*",
+        "arn:aws:ec2:us-east-2::snapshot/snap-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ManageInstanceLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:RebootInstances",
+        "ec2:TerminateInstances",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:ModifyInstanceMetadataOptions"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-2:222234418877:instance/*",
+        "arn:aws:ec2:us-east-2:222234418877:security-group/*",
+        "arn:aws:ec2:us-east-2:222234418877:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ManageInstanceVolumes",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVolume",
+        "ec2:DeleteVolume",
+        "ec2:AttachVolume",
+        "ec2:DetachVolume",
+        "ec2:ModifyVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-2:222234418877:instance/*",
+        "arn:aws:ec2:us-east-2:222234418877:volume/*",
+        "arn:aws:ec2:us-east-2::snapshot/snap-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ManageInstanceNetworkInterfaces",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateNetworkInterface",
+        "ec2:DeleteNetworkInterface",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ec2:AttachNetworkInterface",
+        "ec2:DetachNetworkInterface"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-2:222234418877:instance/*",
+        "arn:aws:ec2:us-east-2:222234418877:network-interface/*",
+        "arn:aws:ec2:us-east-2:222234418877:subnet/*",
+        "arn:aws:ec2:us-east-2:222234418877:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ImportAndDeleteStackPublicKeys",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:ImportKeyPair",
+        "ec2:DeleteKeyPair"
+      ],
+      "Resource": "arn:aws:ec2:us-east-2:222234418877:key-pair/key-*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "TagComputeResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags",
+        "ec2:DeleteTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-2:222234418877:instance/*",
+        "arn:aws:ec2:us-east-2:222234418877:volume/*",
+        "arn:aws:ec2:us-east-2:222234418877:network-interface/*",
+        "arn:aws:ec2:us-east-2:222234418877:key-pair/key-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ResolveConfiguredAmazonLinuxAmi",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": "arn:aws:ssm:us-east-2::parameter/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.18-x86_64",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "CleanUpEc2KeyPairParameter",
+      "Effect": "Allow",
+      "Action": "ssm:DeleteParameter",
+      "Resource": "arn:aws:ssm:us-east-2:222234418877:parameter/ec2/keypair/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    }
+  ]
+}

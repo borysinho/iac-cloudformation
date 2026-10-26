@@ -95,6 +95,8 @@ Las dos subredes y ambos grupos deben pertenecer a la misma VPC y región. La p�
 
 ## Preparar y revisar stacks independientes con AWS CLI
 
+Para el asistente Git Sync, el mismo rol de ejecución puede gestionar ambos stacks. La política local `iam/network-execution-policy.json` incluye red, instancias EC2, discos, interfaces, importación de claves públicas y lectura del parámetro AMI en SSM. Consulta `iam/README.md` para crear o actualizar el rol en IAM; publicar el JSON en Git no modifica automáticamente un rol creado manualmente.
+
 Los comandos siguientes son instrucciones de uso; no se ejecutaron durante la conversión. Requieren AWS CLI y un perfil autorizado. Comprueba que la cuenta sea `222234418877`, la del código de referencia, antes de continuar:
 
 ```bash

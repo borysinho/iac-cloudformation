@@ -1,7 +1,8 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Servidores del laboratorio Globomatics: clave publica y dos EC2 con discos
   cifrados e IMDSv2. Frontend y bastion publico; backend privado accesible via frontend.
+  Esta variante agrega una tercera EC2 privada y un volumen persistente para datos.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -9,12 +10,12 @@ Parameters:
   Project:
     Type: String
     Default: globomatics
-    AllowedPattern: '[a-z][a-z0-9-]{0,29}'
+    AllowedPattern: "[a-z][a-z0-9-]{0,29}"
     Description: Proyecto usado en nombres y etiquetas.
   Environment:
     Type: String
     Default: lab
-    AllowedPattern: '[a-z][a-z0-9-]{0,19}'
+    AllowedPattern: "[a-z][a-z0-9-]{0,19}"
     Description: Entorno usado como sufijo de nombres.
   PublicSubnetId:
     Type: AWS::EC2::Subnet::Id
@@ -36,20 +37,33 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.18-x86_64
     Description: AMI oficial Amazon Linux 2023 x86_64 de la familia kernel 6.18.
+  # AGREGADO: obtener el valor desde las salidas del stack network actualizado.
+  DataSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Salida DataSecurityGroupId de network.yaml; debe pertenecer a la VPC de PrivateSubnetId.
+  DataVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 16384
+    Description: Capacidad inicial del volumen gp3 de datos en GiB; no reducir tras crearlo.
 Resources:
   GlobomaticsKeyPair:
     Type: AWS::EC2::KeyPair
     Metadata:
       com.aws.cloudformation.Context:
         why: Importar la publica existente compartida por los dos EC2.
-        must: [PublicKeyMaterial debe estar presente para no generar una clave privada en AWS.]
+        must:
+          [
+            PublicKeyMaterial debe estar presente para no generar una clave privada en AWS.,
+          ]
     Properties:
-      KeyName: !Sub 'key-${AWS::StackName}'
+      KeyName: !Sub "key-${AWS::StackName}"
       PublicKeyMaterial: !Ref SshPublicKey
       Tags:
-        - {Key: Name, Value: !Sub 'key-${Project}-${Environment}'}
-        - {Key: Project, Value: !Ref Project}
-        - {Key: ManagedBy, Value: CloudFormation}
+        - { Key: Name, Value: !Sub "key-${Project}-${Environment}" }
+        - { Key: Project, Value: !Ref Project }
+        - { Key: ManagedBy, Value: CloudFormation }
   GlobomaticsClient:
     Type: AWS::EC2::Instance
     Metadata:
@@ -75,7 +89,7 @@ Resources:
             Encrypted: true
             DeleteOnTermination: true
       NetworkInterfaces:
-        - DeviceIndex: '0'
+        - DeviceIndex: "0"
           AssociatePublicIpAddress: true
           DeleteOnTermination: true
           SubnetId: !Ref PublicSubnetId
@@ -83,10 +97,10 @@ Resources:
           GroupSet: [!Ref ClientSecurityGroupId]
       PropagateTagsToVolumeOnCreation: true
       Tags:
-        - {Key: Name, Value: !Sub 'ec2-cliente-${Project}-${Environment}'}
-        - {Key: Role, Value: client}
-        - {Key: Project, Value: !Ref Project}
-        - {Key: ManagedBy, Value: CloudFormation}
+        - { Key: Name, Value: !Sub "ec2-cliente-${Project}-${Environment}" }
+        - { Key: Role, Value: client }
+        - { Key: Project, Value: !Ref Project }
+        - { Key: ManagedBy, Value: CloudFormation }
   GlobomaticsBackend:
     Type: AWS::EC2::Instance
     Metadata:
@@ -112,7 +126,7 @@ Resources:
             Encrypted: true
             DeleteOnTermination: true
       NetworkInterfaces:
-        - DeviceIndex: '0'
+        - DeviceIndex: "0"
           AssociatePublicIpAddress: false
           DeleteOnTermination: true
           SubnetId: !Ref PrivateSubnetId
@@ -120,10 +134,83 @@ Resources:
           GroupSet: [!Ref BackendSecurityGroupId]
       PropagateTagsToVolumeOnCreation: true
       Tags:
-        - {Key: Name, Value: !Sub 'ec2-backend-${Project}-${Environment}'}
-        - {Key: Role, Value: backend}
-        - {Key: Project, Value: !Ref Project}
-        - {Key: ManagedBy, Value: CloudFormation}
+        - { Key: Name, Value: !Sub "ec2-backend-${Project}-${Environment}" }
+        - { Key: Role, Value: backend }
+        - { Key: Project, Value: !Ref Project }
+        - { Key: ManagedBy, Value: CloudFormation }
+  # AGREGADO: MySQL se instala manualmente; la subred sigue sin Internet ni NAT.
+  GlobomaticsData:
+    Type: AWS::EC2::Instance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: EC2 dedicada a datos en la subred privada; reutiliza AMI y clave publica existentes.
+        must:
+          - IP privada 10.42.2.30; sin IP publica, sin Internet e IMDSv2 obligatorio.
+          - Usar exclusivamente DataSecurityGroupId para las entradas MySQL y SSH.
+          - Guardar la BD en el volumen separado, no en el disco raiz que se elimina con el EC2.
+          - Instalacion y configuracion manuales; usar paquetes offline o una imagen preparada.
+        mutable: review-required
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      KeyName: !Ref GlobomaticsKeyPair
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 12
+            Encrypted: true
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          AssociatePublicIpAddress: false
+          DeleteOnTermination: true
+          SubnetId: !Ref PrivateSubnetId
+          PrivateIpAddress: 10.42.2.30
+          GroupSet: [!Ref DataSecurityGroupId]
+      PropagateTagsToVolumeOnCreation: true
+      Tags:
+        - { Key: Name, Value: !Sub "ec2-datos-${Project}-${Environment}" }
+        - { Key: Role, Value: data }
+        - { Key: Project, Value: !Ref Project }
+        - { Key: ManagedBy, Value: CloudFormation }
+  GlobomaticsDataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Separar los datos persistentes del disco de sistema y conservarlos al eliminar el stack.
+        must:
+          - Cifrar el volumen y ubicarlo en la misma zona que GlobomaticsData.
+          - Conservar Retain en borrados y reemplazos; mantener respaldos independientes.
+          - Un volumen retenido queda fuera del stack; su reutilizacion requiere gestion explicita.
+        mutable: review-required
+    Properties:
+      AvailabilityZone: !GetAtt GlobomaticsData.AvailabilityZone
+      VolumeType: gp3
+      Size: !Ref DataVolumeSize
+      Encrypted: true
+      Tags:
+        - { Key: Name, Value: !Sub "ebs-datos-${Project}-${Environment}" }
+        - { Key: Project, Value: !Ref Project }
+        - { Key: ManagedBy, Value: CloudFormation }
+  GlobomaticsDataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Adjuntar el volumen persistente al servidor de datos sin mezclarlo con el sistema operativo.
+        must:
+          - Detener MySQL y desmontar el volumen antes de retirar o reemplazar esta asociacion.
+          - Identificar el disco por su ID y UUID; en Nitro el nombre NVMe puede diferir de /dev/sdf.
+          - Formatear solo un volumen nuevo vacio; nunca reformatear al reutilizar datos.
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref GlobomaticsData
+      VolumeId: !Ref GlobomaticsDataVolume
 Outputs:
   ClientInstanceId:
     Description: Identificador del EC2 cliente.
@@ -145,7 +232,20 @@ Outputs:
     Value: !GetAtt GlobomaticsBackend.PrivateIp
   ClientSshCommand:
     Description: Conexion al cliente con la privada correspondiente a SshPublicKey.
-    Value: !Sub 'ssh -i ~/globomatics-ec2 ec2-user@${GlobomaticsClient.PublicIp}'
+    Value: !Sub "ssh -i ~/globomatics-ec2 ec2-user@${GlobomaticsClient.PublicIp}"
   BackendSshCommand:
     Description: SSH al backend privado mediante frontend; la clave privada permanece local.
     Value: !Sub 'ssh -i ~/globomatics-ec2 -o "ProxyCommand=ssh -i ~/globomatics-ec2 -W %h:%p ec2-user@${GlobomaticsClient.PublicIp}" ec2-user@${GlobomaticsBackend.PrivateIp}'
+  # AGREGADO: salidas para configuracion manual y administracion del servidor de datos.
+  DataInstanceId:
+    Description: Identificador de la EC2 de datos privada.
+    Value: !Ref GlobomaticsData
+  DataPrivateIp:
+    Description: Host privado de la BD; configurar DB_HOST del backend con este valor.
+    Value: !GetAtt GlobomaticsData.PrivateIp
+  DataVolumeId:
+    Description: Volumen persistente retenido; montar manualmente y almacenar aqui los datos MySQL.
+    Value: !Ref GlobomaticsDataVolume
+  DataSshCommand:
+    Description: SSH a datos mediante frontend; clave privada solo en el equipo local.
+    Value: !Sub 'ssh -i ~/globomatics-ec2 -o "ProxyCommand=ssh -i ~/globomatics-ec2 -W %h:%p ec2-user@${GlobomaticsClient.PublicIp}" ec2-user@${GlobomaticsData.PrivateIp}'
