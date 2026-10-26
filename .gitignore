@@ -1,0 +1,7 @@
+*.pem
+*.key
+*.pub
+.env
+.env.*
+parameters*.local.json
+dist/

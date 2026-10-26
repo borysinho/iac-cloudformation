@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Red Globomatics con subred publica para frontend y bastion, subred privada
+  para backend sin salida a Internet. Desplegar antes de compute.yaml.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  Project:
+    Type: String
+    Default: globomatics
+    AllowedPattern: '[a-z][a-z0-9-]{0,29}'
+    Description: Proyecto usado en nombres y etiquetas.
+  Environment:
+    Type: String
+    Default: lab
+    AllowedPattern: '[a-z][a-z0-9-]{0,19}'
+    Description: Entorno usado como sufijo de nombres.
+  SshSourceCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])'
+    ConstraintDescription: Debe ser un CIDR IPv4 valido con prefijo de 0 a 32.
+    Description: Origen SSH del frontend y bastion; por defecto cualquier IPv4. Puede restringirse a una IP /32.
+Resources:
+  GlobomaticsVpc:
+    Type: AWS::EC2::VPC
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Red aislada para los dos servidores del laboratorio.
+        must: [Conservar el rango que contiene las IP privadas fijas de ambos EC2.]
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - {Key: Name, Value: !Sub 'vpc-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Frontend y bastion publico; la IP publica se solicita explicitamente en su EC2.
+        must: [Mantener el frontend 10.42.1.10 en esta subred.]
+    Properties:
+      VpcId: !Ref GlobomaticsVpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - {Key: Name, Value: !Sub 'subnet-publica-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Acceso publico y salida a Internet exclusivamente para el frontend.
+    Properties:
+      Tags:
+        - {Key: Name, Value: !Sub 'igw-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: CloudFormation declara la union del gateway a la VPC por separado.
+    Properties:
+      VpcId: !Ref GlobomaticsVpc
+      InternetGatewayId: !Ref GlobomaticsInternetGateway
+  GlobomaticsPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Tabla explicita para la subred del laboratorio.
+    Properties:
+      VpcId: !Ref GlobomaticsVpc
+      Tags:
+        - {Key: Name, Value: !Sub 'rtb-publica-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GlobomaticsGatewayAttachment
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Enrutar Internet por el gateway unido a la VPC antes de lanzar EC2.
+    Properties:
+      RouteTableId: !Ref GlobomaticsPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref GlobomaticsInternetGateway
+  GlobomaticsPublicRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Aplicar la ruta publica exclusivamente a la subred del frontend.
+    Properties:
+      SubnetId: !Ref GlobomaticsPublicSubnet
+      RouteTableId: !Ref GlobomaticsPublicRouteTable
+  GlobomaticsPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Aislar el backend sin IP publica ni salida a Internet, en la misma zona que el frontend.
+        must: [Mantener el backend 10.42.2.20 en esta subred; sin rutas a Internet Gateway ni NAT.]
+    Properties:
+      VpcId: !Ref GlobomaticsVpc
+      CidrBlock: 10.42.2.0/24
+      AvailabilityZone: !GetAtt GlobomaticsPublicSubnet.AvailabilityZone
+      MapPublicIpOnLaunch: false
+      Tags:
+        - {Key: Name, Value: !Sub 'subnet-privada-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Tabla privada con solo la ruta local implicita de la VPC; backend sin salida a Internet.
+        must: [No agregar ruta predeterminada ni NAT a esta tabla.]
+    Properties:
+      VpcId: !Ref GlobomaticsVpc
+      Tags:
+        - {Key: Name, Value: !Sub 'rtb-privada-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsPrivateRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Aplicar la tabla privada al backend y a futuros EC2 de esta subred.
+    Properties:
+      SubnetId: !Ref GlobomaticsPrivateSubnet
+      RouteTableId: !Ref GlobomaticsPrivateRouteTable
+  GlobomaticsClientSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Frontend y bastion; HTTP/HTTPS publicos y SSH desde cualquier IPv4 por requisito del laboratorio.
+        must: [SSH publico solo en el frontend; backend accesible mediante este bastion.]
+    Properties:
+      GroupDescription: Frontend HTTP/HTTPS publico y bastion SSH
+      VpcId: !Ref GlobomaticsVpc
+      SecurityGroupIngress:
+        - {Description: SSH al bastion desde el CIDR autorizado, IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref SshSourceCidr}
+        - {Description: Acceso web publico HTTP, IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0}
+        - {Description: Acceso web publico HTTPS, IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0}
+      SecurityGroupEgress:
+        - {Description: Salida para actualizaciones y configuracion, IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+      Tags:
+        - {Key: Name, Value: !Sub 'secgrp-cliente-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsBackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Backend privado; API y SSH solo desde el grupo del frontend que tambien actua como bastion.
+        must:
+          - API accesible solo desde el grupo del cliente; ninguna entrada de base de datos.
+          - SSH solo desde el grupo del frontend; nunca SSH directo desde Internet.
+    Properties:
+      GroupDescription: Backend privado; API y SSH solo desde frontend; sin acceso a BD
+      VpcId: !Ref GlobomaticsVpc
+      SecurityGroupIngress:
+        - {Description: SSH privado desde el frontend bastion, IpProtocol: tcp, FromPort: 22, ToPort: 22, SourceSecurityGroupId: !Ref GlobomaticsClientSecurityGroup}
+        - Description: TCP 8090 por IP privada desde el servidor cliente
+          IpProtocol: tcp
+          FromPort: 8090
+          ToPort: 8090
+          SourceSecurityGroupId: !Ref GlobomaticsClientSecurityGroup
+      SecurityGroupEgress:
+        - {Description: Salida sujeta a rutas privadas de la VPC; sin Internet, IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+      Tags:
+        - {Key: Name, Value: !Sub 'secgrp-backend-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+Outputs:
+  VpcId:
+    Description: VPC del laboratorio; subred y grupos pertenecen a esta VPC.
+    Value: !Ref GlobomaticsVpc
+  PublicSubnetId:
+    Description: Subred publica para el parametro PublicSubnetId de compute.yaml.
+    Value: !Ref GlobomaticsPublicSubnet
+  PrivateSubnetId:
+    Description: Subred privada para el parametro PrivateSubnetId de compute.yaml.
+    Value: !Ref GlobomaticsPrivateSubnet
+  ClientSecurityGroupId:
+    Description: Grupo del cliente para el parametro ClientSecurityGroupId de compute.yaml.
+    Value: !Ref GlobomaticsClientSecurityGroup
+  BackendSecurityGroupId:
+    Description: Grupo del backend para el parametro BackendSecurityGroupId de compute.yaml.
+    Value: !Ref GlobomaticsBackendSecurityGroup

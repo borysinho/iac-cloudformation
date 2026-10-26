@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Globomatics con frontend publico y bastion y backend privado sin Internet mediante stacks anidados.
+  Empaquetar con aws cloudformation package antes de desplegar en AWS.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  Project:
+    Type: String
+    Default: globomatics
+    AllowedPattern: '[a-z][a-z0-9-]{0,29}'
+    Description: Proyecto usado en nombres y etiquetas.
+  Environment:
+    Type: String
+    Default: lab
+    AllowedPattern: '[a-z][a-z0-9-]{0,19}'
+    Description: Entorno usado como sufijo de nombres.
+  SshSourceCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])'
+    ConstraintDescription: Debe ser un CIDR IPv4 valido con prefijo de 0 a 32.
+    Description: Origen SSH del frontend y bastion; por defecto cualquier IPv4. Puede restringirse a una IP /32.
+  SshPublicKey:
+    Type: String
+    AllowedPattern: 'ssh-(ed25519|rsa) [A-Za-z0-9+/]+={0,3}( [^\r\n]+)?'
+    Description: Contenido de la clave PUBLICA OpenSSH existente, nunca la privada.
+  LatestAmiId:
+    Type: String
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.18-x86_64
+    Description: Nombre del parametro SSM; compute.yaml lo resuelve a una AMI, no pasar un ami-id.
+Resources:
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Administrar la red como plantilla completa y compartir sus salidas con los servidores.
+        must: [Completar la red antes de crear los servidores.]
+    Properties:
+      # package sustituye esta ruta local por una URL S3.
+      TemplateURL: network.yaml
+      Parameters:
+        Project: !Ref Project
+        Environment: !Ref Environment
+        SshSourceCidr: !Ref SshSourceCidr
+  ComputeStack:
+    Type: AWS::CloudFormation::Stack
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Reutilizar compute.yaml y propagar automaticamente las salidas de la red.
+        must:
+          - Usar las subredes publica y privada y los grupos producidos por NetworkStack.
+          - Pasar el nombre del parametro SSM; la plantilla hija resuelve la AMI.
+          - Respaldar los datos antes de reemplazar o eliminar servidores.
+    Properties:
+      TemplateURL: compute.yaml
+      Parameters:
+        Project: !Ref Project
+        Environment: !Ref Environment
+        PublicSubnetId: !GetAtt NetworkStack.Outputs.PublicSubnetId
+        PrivateSubnetId: !GetAtt NetworkStack.Outputs.PrivateSubnetId
+        ClientSecurityGroupId: !GetAtt NetworkStack.Outputs.ClientSecurityGroupId
+        BackendSecurityGroupId: !GetAtt NetworkStack.Outputs.BackendSecurityGroupId
+        SshPublicKey: !Ref SshPublicKey
+        # String en el padre; AWS::SSM::Parameter::Value en compute.yaml.
+        LatestAmiId: !Ref LatestAmiId
+Outputs:
+  VpcId:
+    Description: VPC del laboratorio; subred y grupos pertenecen a esta VPC.
+    Value: !GetAtt NetworkStack.Outputs.VpcId
+  PublicSubnetId:
+    Description: Subred publica para el parametro PublicSubnetId de compute.yaml.
+    Value: !GetAtt NetworkStack.Outputs.PublicSubnetId
+  PrivateSubnetId:
+    Description: Subred privada para el parametro PrivateSubnetId de compute.yaml.
+    Value: !GetAtt NetworkStack.Outputs.PrivateSubnetId
+  ClientSecurityGroupId:
+    Description: Grupo del cliente para el parametro ClientSecurityGroupId de compute.yaml.
+    Value: !GetAtt NetworkStack.Outputs.ClientSecurityGroupId
+  BackendSecurityGroupId:
+    Description: Grupo del backend para el parametro BackendSecurityGroupId de compute.yaml.
+    Value: !GetAtt NetworkStack.Outputs.BackendSecurityGroupId
+  ClientInstanceId:
+    Description: Identificador del EC2 cliente.
+    Value: !GetAtt ComputeStack.Outputs.ClientInstanceId
+  ClientPublicIp:
+    Description: IPv4 publica dinamica del cliente.
+    Value: !GetAtt ComputeStack.Outputs.ClientPublicIp
+  ClientPublicDns:
+    Description: DNS publico del cliente.
+    Value: !GetAtt ComputeStack.Outputs.ClientPublicDns
+  ClientPrivateIp:
+    Description: IPv4 privada fija del cliente.
+    Value: !GetAtt ComputeStack.Outputs.ClientPrivateIp
+  BackendInstanceId:
+    Description: Identificador del EC2 backend.
+    Value: !GetAtt ComputeStack.Outputs.BackendInstanceId
+  BackendPrivateIp:
+    Description: IPv4 privada fija del backend.
+    Value: !GetAtt ComputeStack.Outputs.BackendPrivateIp
+  ClientSshCommand:
+    Description: Conexion al cliente con la privada correspondiente a SshPublicKey.
+    Value: !GetAtt ComputeStack.Outputs.ClientSshCommand
+  BackendSshCommand:
+    Description: SSH al backend privado mediante frontend; la clave privada permanece local.
+    Value: !GetAtt ComputeStack.Outputs.BackendSshCommand

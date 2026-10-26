@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Servidores del laboratorio Globomatics: clave publica y dos EC2 con discos
+  cifrados e IMDSv2. Frontend y bastion publico; backend privado accesible via frontend.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+Parameters:
+  Project:
+    Type: String
+    Default: globomatics
+    AllowedPattern: '[a-z][a-z0-9-]{0,29}'
+    Description: Proyecto usado en nombres y etiquetas.
+  Environment:
+    Type: String
+    Default: lab
+    AllowedPattern: '[a-z][a-z0-9-]{0,19}'
+    Description: Entorno usado como sufijo de nombres.
+  PublicSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Salida PublicSubnetId de network.yaml; contiene el frontend 10.42.1.10.
+  PrivateSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Salida PrivateSubnetId de network.yaml; contiene el backend 10.42.2.20.
+  ClientSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Salida ClientSecurityGroupId de network.yaml, en la VPC de la subred.
+  BackendSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Salida BackendSecurityGroupId de network.yaml, en la VPC de la subred.
+  SshPublicKey:
+    Type: String
+    AllowedPattern: 'ssh-(ed25519|rsa) [A-Za-z0-9+/]+={0,3}( [^\r\n]+)?'
+    Description: Contenido de la clave PUBLICA OpenSSH existente, nunca la privada.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.18-x86_64
+    Description: AMI oficial Amazon Linux 2023 x86_64 de la familia kernel 6.18.
+Resources:
+  GlobomaticsKeyPair:
+    Type: AWS::EC2::KeyPair
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Importar la publica existente compartida por los dos EC2.
+        must: [PublicKeyMaterial debe estar presente para no generar una clave privada en AWS.]
+    Properties:
+      KeyName: !Sub 'key-${AWS::StackName}'
+      PublicKeyMaterial: !Ref SshPublicKey
+      Tags:
+        - {Key: Name, Value: !Sub 'key-${Project}-${Environment}'}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsClient:
+    Type: AWS::EC2::Instance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Servidor cliente configurado manualmente; volumen raiz hereda las etiquetas del EC2.
+        must:
+          - Desplegar tras completar network.yaml; subred y grupo deben pertenecer a su misma VPC.
+          - Conservar IP privada fija, IP publica dinamica, cifrado e IMDSv2 obligatorio.
+          - Respaldar datos antes del reemplazo o borrado; el disco raiz se elimina con el EC2.
+        mutable: review-required
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      KeyName: !Ref GlobomaticsKeyPair
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 12
+            Encrypted: true
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          DeleteOnTermination: true
+          SubnetId: !Ref PublicSubnetId
+          PrivateIpAddress: 10.42.1.10
+          GroupSet: [!Ref ClientSecurityGroupId]
+      PropagateTagsToVolumeOnCreation: true
+      Tags:
+        - {Key: Name, Value: !Sub 'ec2-cliente-${Project}-${Environment}'}
+        - {Key: Role, Value: client}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+  GlobomaticsBackend:
+    Type: AWS::EC2::Instance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Backend privado sin IP publica ni Internet; SSH mediante frontend bastion y API solo desde frontend.
+        must:
+          - Desplegar tras completar network.yaml; subred y grupo deben pertenecer a su misma VPC.
+          - Conservar IP privada fija, ausencia de IP publica y de Internet, cifrado e IMDSv2 obligatorio.
+          - Respaldar datos antes del reemplazo o borrado; el disco raiz se elimina con el EC2.
+        mutable: review-required
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      KeyName: !Ref GlobomaticsKeyPair
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 20
+            Encrypted: true
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          AssociatePublicIpAddress: false
+          DeleteOnTermination: true
+          SubnetId: !Ref PrivateSubnetId
+          PrivateIpAddress: 10.42.2.20
+          GroupSet: [!Ref BackendSecurityGroupId]
+      PropagateTagsToVolumeOnCreation: true
+      Tags:
+        - {Key: Name, Value: !Sub 'ec2-backend-${Project}-${Environment}'}
+        - {Key: Role, Value: backend}
+        - {Key: Project, Value: !Ref Project}
+        - {Key: ManagedBy, Value: CloudFormation}
+Outputs:
+  ClientInstanceId:
+    Description: Identificador del EC2 cliente.
+    Value: !Ref GlobomaticsClient
+  ClientPublicIp:
+    Description: IPv4 publica dinamica del cliente.
+    Value: !GetAtt GlobomaticsClient.PublicIp
+  ClientPublicDns:
+    Description: DNS publico del cliente.
+    Value: !GetAtt GlobomaticsClient.PublicDnsName
+  ClientPrivateIp:
+    Description: IPv4 privada fija del cliente.
+    Value: !GetAtt GlobomaticsClient.PrivateIp
+  BackendInstanceId:
+    Description: Identificador del EC2 backend.
+    Value: !Ref GlobomaticsBackend
+  BackendPrivateIp:
+    Description: IPv4 privada fija del backend.
+    Value: !GetAtt GlobomaticsBackend.PrivateIp
+  ClientSshCommand:
+    Description: Conexion al cliente con la privada correspondiente a SshPublicKey.
+    Value: !Sub 'ssh -i ~/globomatics-ec2 ec2-user@${GlobomaticsClient.PublicIp}'
+  BackendSshCommand:
+    Description: SSH al backend privado mediante frontend; la clave privada permanece local.
+    Value: !Sub 'ssh -i ~/globomatics-ec2 -o "ProxyCommand=ssh -i ~/globomatics-ec2 -W %h:%p ec2-user@${GlobomaticsClient.PublicIp}" ec2-user@${GlobomaticsBackend.PrivateIp}'
