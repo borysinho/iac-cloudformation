@@ -1,0 +1,14 @@
+template-file-path: compute.yaml
+parameters:
+  Project: globomatics
+  Environment: lab
+  PublicSubnetId: subnet-03f3f5e3a077fd410
+  PrivateSubnetId: subnet-0889ba983297395d4
+  ClientSecurityGroupId: sg-022ac53ecffed2a59
+  BackendSecurityGroupId: sg-047e4de61a1436992
+  SshPublicKey: >-
+    ssh-ed25519
+    AAAAC3NzaC1lZDI1NTE5AAAAICymAfNdDfMyuSCqxAx7Nh10n91S6MgUTToJvZrWJkjz
+    globomatics
+  LatestAmiId: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.18-x86_64
+tags: {}
