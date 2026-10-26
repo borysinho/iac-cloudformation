@@ -1,0 +1,6 @@
+template-file-path: network.yaml
+parameters:
+  Project: globomatics
+  Environment: lab
+  SshSourceCidr: 0.0.0.0/0
+tags: {}
