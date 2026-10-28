@@ -2,6 +2,7 @@ template-file-path: compute.yaml
 parameters:
   Project: globomatics
   Environment: lab
+  VpcId: vpc-0a45f3386360bf1d2
   PublicSubnetId: subnet-03f3f5e3a077fd410
   PrivateSubnetId: subnet-0889ba983297395d4
   ClientSecurityGroupId: sg-022ac53ecffed2a59

@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Servidores del laboratorio Globomatics: clave publica y dos EC2 con discos
-  cifrados e IMDSv2. Frontend y bastion publico; backend privado accesible via frontend.
-  Esta variante agrega una tercera EC2 privada y un volumen persistente para datos.
+  Cuatro EC2 Globomatics con discos cifrados e IMDSv2: frontend y bastion publico,
+  backend, datos y administracion MySQL privados sin Internet.
+  Incluye volumen persistente para datos y acceso MySQL desde backend y administracion.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -17,6 +17,9 @@ Parameters:
     Default: lab
     AllowedPattern: "[a-z][a-z0-9-]{0,19}"
     Description: Entorno usado como sufijo de nombres.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Salida VpcId de network.yaml; misma VPC que subredes y grupos existentes.
   PublicSubnetId:
     Type: AWS::EC2::Subnet::Id
     Description: Salida PublicSubnetId de network.yaml; contiene el frontend 10.42.1.10.
@@ -52,7 +55,7 @@ Resources:
     Type: AWS::EC2::KeyPair
     Metadata:
       com.aws.cloudformation.Context:
-        why: Importar la publica existente compartida por los dos EC2.
+        why: Importar la publica existente compartida por los cuatro EC2.
         must:
           [
             PublicKeyMaterial debe estar presente para no generar una clave privada en AWS.,
@@ -211,7 +214,100 @@ Resources:
       Device: /dev/sdf
       InstanceId: !Ref GlobomaticsData
       VolumeId: !Ref GlobomaticsDataVolume
+  GlobomaticsDbAdminSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Aislar el puesto de administracion; crear el grupo junto al EC2 evita pedir un identificador de grupo aun inexistente en Git Sync.
+        must:
+          - VpcId debe coincidir con PrivateSubnetId y con los grupos de frontend y datos.
+          - Permitir SSH solo desde frontend y salida MySQL solo hacia el grupo de datos.
+          - Asociar exclusivamente a GlobomaticsDbAdmin; no abrir interfaces web.
+    Properties:
+      GroupDescription: Administracion privada MySQL; SSH desde frontend y salida a datos
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: SSH desde frontend bastion
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref ClientSecurityGroupId
+      SecurityGroupEgress:
+        - Description: MySQL hacia el servidor de datos
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          DestinationSecurityGroupId: !Ref DataSecurityGroupId
+      Tags:
+        - { Key: Name, Value: !Sub "secgrp-admin-bd-${Project}-${Environment}" }
+        - { Key: Project, Value: !Ref Project }
+        - { Key: ManagedBy, Value: CloudFormation }
+  GlobomaticsDataIngressFromDbAdmin:
+    Type: AWS::EC2::SecurityGroupIngress
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Autorizar MySQL desde el nuevo administrador en el grupo de datos existente sin crear dependencias inversas hacia compute en network.
+        must:
+          - Aplicar solo a DataSecurityGroupId y al grupo exclusivo de administracion.
+          - Conservar las reglas de backend y bastion que pertenecen a network.yaml.
+          - Esta regla pertenece a compute y se elimina al retirar compute antes de network.
+    Properties:
+      Description: MySQL privado desde EC2 de administracion
+      GroupId: !Ref DataSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref GlobomaticsDbAdminSecurityGroup
+  GlobomaticsDbAdmin:
+    Type: AWS::EC2::Instance
+    DependsOn: GlobomaticsDataIngressFromDbAdmin
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Puesto independiente para administrar MySQL por SSH y cliente SQL; no aloja los datos de la BD.
+        must:
+          - IP privada 10.42.2.40 en PrivateSubnetId; sin IP publica ni salida a Internet.
+          - IMDSv2 obligatorio y disco raiz cifrado; no guardar aqui datos persistentes.
+          - Instalar cliente MySQL manualmente con paquetes offline o AMI preparada; no se instala una interfaz web.
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      KeyName: !Ref GlobomaticsKeyPair
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 12
+            Encrypted: true
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          AssociatePublicIpAddress: false
+          DeleteOnTermination: true
+          SubnetId: !Ref PrivateSubnetId
+          PrivateIpAddress: 10.42.2.40
+          GroupSet: [!Ref GlobomaticsDbAdminSecurityGroup]
+      PropagateTagsToVolumeOnCreation: true
+      Tags:
+        - { Key: Name, Value: !Sub "ec2-admin-bd-${Project}-${Environment}" }
+        - { Key: Role, Value: db-admin }
+        - { Key: Project, Value: !Ref Project }
+        - { Key: ManagedBy, Value: CloudFormation }
 Outputs:
+  DbAdminInstanceId:
+    Description: Identificador de la EC2 privada para administracion MySQL.
+    Value: !Ref GlobomaticsDbAdmin
+  DbAdminPrivateIp:
+    Description: IPv4 privada del administrador.
+    Value: !GetAtt GlobomaticsDbAdmin.PrivateIp
+  DbAdminSecurityGroupId:
+    Description: Grupo exclusivo creado por compute para administracion MySQL.
+    Value: !Ref GlobomaticsDbAdminSecurityGroup
+  DbAdminSshCommand:
+    Description: SSH a administracion mediante frontend; clave privada solo en tu equipo.
+    Value: !Sub 'ssh -i ~/globomatics-ec2 -o "ProxyCommand=ssh -i ~/globomatics-ec2 -W %h:%p ec2-user@${GlobomaticsClient.PublicIp}" ec2-user@${GlobomaticsDbAdmin.PrivateIp}'
   ClientInstanceId:
     Description: Identificador del EC2 cliente.
     Value: !Ref GlobomaticsClient

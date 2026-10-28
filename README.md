@@ -1,13 +1,13 @@
 # Globomatics con AWS CloudFormation
 
-El flujo principal utiliza **dos plantillas independientes: `network.yaml` y `compute.yaml`**, adaptadas a frontend público y backend privado. Primero despliega la red y luego los servidores, pasando las salidas de red como parámetros. Este flujo no utiliza `main.yaml`, empaquetado ni un bucket S3 de plantillas. No necesita ensamblado ni Python.
+El flujo principal utiliza **dos plantillas independientes: `network.yaml` y `compute.yaml`**, adaptadas a frontend público, backend, datos y administración de base de datos privados. Primero despliega la red y luego los servidores, pasando las salidas de red como parámetros. Este flujo no utiliza `main.yaml`, empaquetado ni un bucket S3 de plantillas. No necesita ensamblado ni Python.
 
 `main.yaml` se conserva como alternativa opcional para quien quiera administrar todo mediante stacks anidados. Su uso requiere empaquetar las plantillas hijas en S3.
 
 | Plantilla | Recursos | Entradas y salidas |
 |---|---|---|
-| `network.yaml` | VPC, subred pública, subred privada, tabla pública con ruta a Internet, tabla privada local, Internet Gateway y dos grupos de seguridad | Recibe proyecto, entorno y CIDR SSH del bastión; devuelve VPC, ambas subredes y grupos |
-| `compute.yaml` | Clave pública importada y dos EC2 con sus discos raíz | Recibe proyecto, entorno, ambas subredes, grupos, clave pública y parámetro AMI; devuelve identificadores, direcciones y comandos SSH |
+| `network.yaml` | VPC, subred pública, subred privada, tabla pública con ruta a Internet, tabla privada local, Internet Gateway y tres grupos de seguridad | Recibe proyecto, entorno y CIDR SSH del bastión; devuelve VPC, ambas subredes y grupos |
+| `compute.yaml` | Clave pública importada, cuatro EC2 con sus discos raíz, un volumen persistente de datos y el grupo/regla de administración | Recibe proyecto, entorno, VPC, ambas subredes, grupos, clave pública y parámetro AMI; devuelve identificadores, direcciones y comandos SSH |
 | `main.yaml` (opcional) | Stack anidado de red y stack anidado de servidores | Recibe los parámetros comunes, conecta las salidas de red y publica las salidas de ambas plantillas |
 
 **Orden del flujo principal:** crea `network.yaml`, espera a que termine y pasa sus salidas a `compute.yaml`. No hay `Export`/`ImportValue`: debes administrar los parámetros y el orden entre los dos stacks. Ninguna de estas dos plantillas depende de `main.yaml`.
@@ -33,7 +33,7 @@ El README de OpenTofu indica que ese laboratorio fue retirado y recreado con Pul
 | Proyecto / entorno | `globomatics` / `lab` por defecto en ambas plantillas |
 | VPC | `10.42.0.0/16`; DNS habilitado |
 | Subred pública | `10.42.1.0/24`, frontend y bastión |
-| Subred privada | `10.42.2.0/24`, backend |
+| Subred privada | `10.42.2.0/24`, backend, datos y administración |
 | Zona | Primera devuelta por `Fn::GetAZs`; ambas subredes están en la misma zona |
 | Internet público | Ruta `0.0.0.0/0` de la subred pública al Internet Gateway |
 | Internet privado | **Sin Internet:** tabla privada con solo la ruta local implícita de la VPC, sin ruta predeterminada ni NAT |
@@ -47,7 +47,13 @@ El README de OpenTofu indica que ese laboratorio fue retirado y recreado con Pul
 | API | TCP 8090 al backend desde el grupo del cliente, por IP privada |
 | Salida frontend | IPv4 hacia Internet para actualizaciones y configuración manual |
 | Salida backend | Solo destinos alcanzables dentro de la VPC; sin salida a Internet |
-| Base de datos | No se crea un servicio ni se abren puertos de base de datos |
+| Datos | `t3.micro`, privada `10.42.2.30`, sin IP pública, raíz gp3 cifrada de 12 GiB |
+| Disco de datos | gp3 cifrado de 20 GiB por defecto (`DataVolumeSize`), retenido al borrar o reemplazar el volumen |
+| Administración BD | `t3.micro`, privada `10.42.2.40`, sin IP pública, raíz gp3 cifrada de 12 GiB |
+| MySQL | TCP 3306 desde backend y administración al grupo de datos |
+| SSH a administración | TCP 22 solo desde el grupo frontend bastión |
+| Salida administración | Solo TCP 3306 hacia el grupo de datos |
+| SSH a datos | TCP 22 solo desde el grupo frontend bastión |
 
 Solo el frontend tiene IP pública explícita. El backend tiene únicamente IP privada y no dispone de salida a Internet. Se importa solo la clave pública existente, nunca la privada. No se incluye `UserData`, software, roles IAM ni instalación de la aplicación; consulta `../asistencia/docs/despliegue-manual-aws.md` para configurarla por SSH.
 
@@ -59,11 +65,15 @@ Las reglas de seguridad se adaptan al acceso mediante bastión y conservan la AP
 Internet ── HTTP/HTTPS ──> frontend 10.42.1.10 (IP pública)
 Internet ── SSH :22 ─────> frontend como bastión
                            ├── API :8090 ──> backend 10.42.2.20 (sin IP pública)
-                           └── SSH :22 ────> backend 10.42.2.20
-backend ──> ruta local de la VPC; sin salida a Internet
+                           ├── SSH :22 ────> backend 10.42.2.20
+                           ├── SSH :22 ────> datos 10.42.2.30
+                           └── SSH :22 ────> admin BD 10.42.2.40
+backend 10.42.2.20 ── MySQL :3306 ──> datos 10.42.2.30
+admin BD 10.42.2.40 ─ MySQL :3306 ──> datos 10.42.2.30
+Todos los EC2 privados permanecen sin salida a Internet.
 ```
 
-El requisito de SSH desde cualquier IP se implementa en el **punto de entrada público, el frontend**. Al llegar al backend, la conexión SSH proviene del bastión; su grupo permite TCP 22 y TCP 8090 únicamente desde el grupo del frontend. No se abre TCP 22 del backend a Internet. La referencia de grupo permite los recursos que tengan asociado ese grupo, no exclusivamente una IP concreta. Cualquier otro EC2 privado que deba seguir esta política debe utilizar `BackendSecurityGroupId`.
+El requisito de SSH desde cualquier IP se implementa en el **punto de entrada público, el frontend**. Al llegar al backend, la conexión SSH proviene del bastión; su grupo permite TCP 22 y TCP 8090 únicamente desde el grupo del frontend. No se abre TCP 22 del backend a Internet. La referencia de grupo permite los recursos que tengan asociado ese grupo, no exclusivamente una IP concreta. Cada función utiliza su grupo exclusivo: backend, datos y administración. No agregues el grupo backend al administrador, porque ampliaría sus permisos.
 
 Desde tu equipo, con la clave privada local y sin copiarla al frontend:
 
@@ -75,7 +85,7 @@ ssh -i ~/globomatics-ec2 \
 
 La salida `BackendSshCommand` genera ese comando con los valores del stack. El frontend debe permitir reenvío TCP en su configuración SSH para que funcione el bastión; no se instala ni modifica `sshd` mediante estas plantillas. No se requiere copiar claves privadas ni habilitar agent forwarding.
 
-La API continúa escuchando en TCP 8090. Al seguir la guía histórica `../asistencia/docs/despliegue-manual-aws.md`, **sustituye la antigua IP del backend `10.42.1.20` por `10.42.2.20`** en `BACKEND_HOST`, en `proxy_pass` de Nginx y en las pruebas. MySQL permanece en `127.0.0.1:3306`; no se abre el puerto 3306 entre subredes. El navegador utiliza `/api` en el frontend, que reenvía la petición por la red privada.
+La API continúa escuchando en TCP 8090. Al seguir la guía histórica `../asistencia/docs/despliegue-manual-aws.md`, **sustituye la antigua IP del backend `10.42.1.20` por `10.42.2.20`** en `BACKEND_HOST`, en `proxy_pass` de Nginx y en las pruebas. Para usar la EC2 de datos, instala y configura MySQL en `10.42.2.30`, monta el volumen persistente y configura `DB_HOST=10.42.2.30` en el backend. MySQL debe escuchar en la IP privada y autorizar al usuario de la aplicación desde el backend; la plantilla no instala software ni migra la BD. El grupo de datos permite TCP 3306 desde backend y administración, mediante reglas que pertenecen respectivamente a network y compute. El navegador utiliza `/api` en el frontend, que reenvía la petición por la red privada.
 
 No se crean NAT Gateway ni Elastic IP. La tabla privada tiene únicamente la ruta local que AWS agrega a toda tabla de la VPC; no tiene ruta predeterminada ni al Internet Gateway ni a un NAT. Las dos subredes tienen tabla de rutas propia. Las reglas de salida del grupo backend no crean conectividad a Internet: sin una ruta de salida el tráfico no puede alcanzarlo.
 
@@ -86,12 +96,32 @@ El backend no podrá ejecutar directamente instalaciones o actualizaciones desde
 Los pasos siguientes corresponden al flujo principal con dos stacks independientes. Puedes cargar directamente `network.yaml` y `compute.yaml` en la consola; no necesitas `main.yaml` ni un bucket S3 de plantillas.
 
 1. En `us-east-2`, crea un stack con `network.yaml`. Indica `Project`, `Environment` y `SshSourceCidr`. Su valor predeterminado `0.0.0.0/0` permite SSH al frontend desde cualquier IPv4; puedes restringirlo con tu IP y `/32`.
-2. Espera `CREATE_COMPLETE`. Copia las salidas `PublicSubnetId`, `PrivateSubnetId`, `ClientSecurityGroupId` y `BackendSecurityGroupId`.
+2. Espera `CREATE_COMPLETE`. Copia las salidas `VpcId`, `PublicSubnetId`, `PrivateSubnetId`, `ClientSecurityGroupId`, `BackendSecurityGroupId` y `DataSecurityGroupId`.
 3. Crea otro stack con `compute.yaml`. Pega esas salidas en los parámetros del mismo nombre y utiliza el mismo proyecto y entorno para conservar etiquetas coherentes.
 4. En `SshPublicKey`, pega el contenido de tu archivo público OpenSSH RSA o Ed25519. Conserva el parámetro SSM predeterminado salvo que quieras cambiar deliberadamente la familia de AMI.
 5. Revisa los recursos y crea el stack. Sus salidas muestran las direcciones y comandos SSH.
 
-Las dos subredes y ambos grupos deben pertenecer a la misma VPC y región. La pública debe contener `10.42.1.10` y la privada `10.42.2.20`; pasar identificadores de otra red puede impedir el lanzamiento. Los tipos de parámetros AWS comprueban identificadores, pero no garantizan por sí solos estas relaciones.
+Las dos subredes y los tres grupos deben pertenecer a la misma VPC y región. La pública debe contener `10.42.1.10` y la privada `10.42.2.20`, `10.42.2.30` y `10.42.2.40`; pasar identificadores de otra red puede impedir el lanzamiento. Los tipos de parámetros AWS comprueban identificadores, pero no garantizan por sí solos estas relaciones.
+
+Para Git Sync, `deployments/compute-lab.yaml` debe contener `VpcId` y `DataSecurityGroupId` con el valor real de la salida de red. Primero actualiza network, espera `UPDATE_COMPLETE` y después incorpora ese identificador al despliegue de compute. Crear un grupo en network no actualiza por sí solo los parámetros del stack compute. `DataVolumeSize` es opcional y tiene valor predeterminado de 20 GiB. El `main.yaml` opcional transmite VPC, grupos y tamaño de volumen automáticamente.
+
+El volumen de datos se adjunta como `/dev/sdf` (en Nitro puede verse como NVMe). Debes identificarlo, formatearlo solo si está vacío, montarlo por UUID y configurar MySQL para guardar allí sus datos. La retención conserva el disco, pero no realiza respaldos ni vuelve a adjuntarlo automáticamente después de un reemplazo. Tanto datos como backend permanecen sin Internet; prepara paquetes offline o una AMI con dependencias.
+
+## EC2 para administración de la base de datos
+
+`GlobomaticsDbAdmin` es una cuarta EC2 independiente de la EC2 de datos. Usa `10.42.2.40`, la clave pública compartida e IMDSv2 obligatorio. El administrador no aloja la BD ni tiene interfaz web preinstalada. Accede con el comando de la salida `DbAdminSshCommand`; la clave privada permanece en tu equipo.
+
+Su grupo `GlobomaticsDbAdminSecurityGroup` se crea en **compute**, en la VPC recibida mediante `VpcId`, junto con la regla `GlobomaticsDataIngressFromDbAdmin`. Esta última permite TCP 3306 en el grupo de datos únicamente desde administración. Así no necesitas proporcionar un nuevo identificador de grupo antes de crearlo. Network conserva sus reglas de datos para backend y bastión; compute administra solo la regla adicional. Retira compute antes de network y conserva esa propiedad de las reglas al editarlas. El grupo de datos está asociado exclusivamente a la EC2 de datos en estas plantillas.
+
+`deployments/compute-lab.yaml` ya incluye `VpcId: vpc-0a45f3386360bf1d2`, correspondiente al laboratorio utilizado previamente. Si recreas la red, sustituye ese valor y los identificadores de subredes/grupos por las nuevas salidas antes de desplegar. Con el `main.yaml` opcional, la VPC se obtiene directamente de la salida del stack de red.
+
+Prepara el cliente MySQL mediante paquetes offline compatibles con Amazon Linux 2023 x86_64 y transfiérelos mediante el bastión, o utiliza una AMI preparada. La plantilla conserva la instalación manual y no configura usuarios ni contraseñas. Después de instalar el cliente, desde administración puedes ejecutar:
+
+```bash
+mysql --host=10.42.2.30 --port=3306 --user=administrador --password
+```
+
+MySQL debe escuchar en la IP privada de datos y tener un usuario autorizado desde `10.42.2.40`, con los privilegios administrativos que necesites. El comando solicita la contraseña de forma interactiva. Las reglas de red no crean usuarios MySQL. No se habilitan NAT, salida a Internet, HTTP ni HTTPS en administración.
 
 ## Preparar y revisar stacks independientes con AWS CLI
 
@@ -127,6 +157,9 @@ aws cloudformation deploy \
 aws cloudformation wait stack-create-complete \
   --region us-east-2 --stack-name globomatics-cfn-network
 
+VPC_ID=$(aws cloudformation describe-stacks \
+  --region us-east-2 --stack-name globomatics-cfn-network \
+  --query "Stacks[0].Outputs[?OutputKey=='VpcId'].OutputValue | [0]" --output text)
 PUBLIC_SUBNET_ID=$(aws cloudformation describe-stacks \
   --region us-east-2 --stack-name globomatics-cfn-network \
   --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetId'].OutputValue | [0]" --output text)
@@ -139,6 +172,9 @@ CLIENT_SECURITY_GROUP_ID=$(aws cloudformation describe-stacks \
 BACKEND_SECURITY_GROUP_ID=$(aws cloudformation describe-stacks \
   --region us-east-2 --stack-name globomatics-cfn-network \
   --query "Stacks[0].Outputs[?OutputKey=='BackendSecurityGroupId'].OutputValue | [0]" --output text)
+DATA_SECURITY_GROUP_ID=$(aws cloudformation describe-stacks \
+  --region us-east-2 --stack-name globomatics-cfn-network \
+  --query "Stacks[0].Outputs[?OutputKey=='DataSecurityGroupId'].OutputValue | [0]" --output text)
 ```
 
 En la misma terminal, prepara los servidores usando tu clave **pública** existente:
@@ -150,10 +186,12 @@ aws cloudformation deploy \
   --template-file compute.yaml \
   --parameter-overrides \
     Project=globomatics Environment=lab \
+    VpcId="$VPC_ID" \
     PublicSubnetId="$PUBLIC_SUBNET_ID" \
     PrivateSubnetId="$PRIVATE_SUBNET_ID" \
     ClientSecurityGroupId="$CLIENT_SECURITY_GROUP_ID" \
     BackendSecurityGroupId="$BACKEND_SECURITY_GROUP_ID" \
+    DataSecurityGroupId="$DATA_SECURITY_GROUP_ID" \
     SshPublicKey="$(cat ~/globomatics-ec2.pub)" \
   --no-execute-changeset
 ```
@@ -231,7 +269,7 @@ Para actualizar, vuelve a ejecutar `package` y prepara el cambio sobre el mismo 
 
 ## Validación
 
-Se revisaron por separado la sintaxis YAML, las referencias internas, las dependencias, el contrato entre salidas y parámetros, las dos tablas de rutas, la ausencia de IP pública en el backend y las reglas de acceso API/SSH a través del frontend. Esto no sustituye la validación de esquemas ni una ejecución en AWS.
+Se revisaron por separado la sintaxis YAML, las referencias internas, las dependencias, el contrato entre salidas y parámetros, las dos tablas de rutas, la ausencia de IP pública en el backend y las reglas de acceso API/SSH a través del frontend. Se comprobaron también propiedades y tipos contra la especificación pública de recursos CloudFormation (versión 269.0.0), ausencia de ciclos, parámetros obligatorios de Git Sync y stacks anidados, cuatro IP distintas, reglas SSH/MySQL y conservación de los recursos EC2 existentes. Esta comprobación local no sustituye `cfn-lint` ni una ejecución en AWS.
 
 Si tienes `cfn-lint` instalado, valida **cada plantilla directamente**:
 
@@ -241,6 +279,6 @@ cfn-lint --template network.yaml compute.yaml --regions us-east-2
 cfn-lint --template main.yaml --regions us-east-2
 ```
 
-`cfn-lint` y `cfn-guard` no están instalados en el entorno utilizado; no se instalaron herramientas ni se evaluó cumplimiento con Guard. No se realizaron operaciones AWS, comprobaciones de AMI, permisos o cuotas. Las entradas HTTP/HTTPS públicas y el SSH público del frontend son intencionales. El backend permite únicamente TCP 22 y 8090 desde el grupo del frontend.
+`cfn-lint` y `cfn-guard` no están instalados en el entorno utilizado; no se instalaron herramientas ni se evaluó cumplimiento con Guard. No se realizaron operaciones AWS, comprobaciones de AMI, permisos o cuotas. Las entradas HTTP/HTTPS públicas y el SSH público del frontend son intencionales. El backend permite únicamente TCP 22 y 8090 desde el grupo del frontend. Datos permite MySQL desde backend y administración; administración permite SSH desde frontend y salida MySQL a datos. No se probó conexión SSH/MySQL ni instalación de software; no se crearon change sets ni se publicaron cambios.
 
 Referencias oficiales: [subredes privadas y NAT](https://docs.aws.amazon.com/vpc/latest/userguide/vpc-example-private-subnets-nat.html), [tablas de rutas](https://docs.aws.amazon.com/vpc/latest/userguide/subnet-route-tables.html), [empaquetado de plantillas locales](https://docs.aws.amazon.com/cli/latest/reference/cloudformation/package.html), [stacks anidados y salidas](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-cloudformation-stack.html), [EC2 y propagación de etiquetas a volúmenes](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-ec2-instance.html), [IMDSv2 directamente en EC2](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-ec2-instance-metadataoptions.html) e [importación de una clave pública](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-ec2-keypair.html).

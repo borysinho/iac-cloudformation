@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Globomatics con frontend publico y bastion y backend privado sin Internet mediante stacks anidados.
+  Globomatics con frontend publico y bastion, backend, datos y administracion privados sin Internet mediante stacks anidados.
   Empaquetar con aws cloudformation package antes de desplegar en AWS.
 Metadata:
   AWSToolsMetrics:
@@ -30,6 +30,12 @@ Parameters:
     Type: String
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.18-x86_64
     Description: Nombre del parametro SSM; compute.yaml lo resuelve a una AMI, no pasar un ami-id.
+  DataVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 16384
+    Description: Capacidad del volumen persistente de datos en GiB; no reducir tras crearlo.
 Resources:
   NetworkStack:
     Type: AWS::CloudFormation::Stack
@@ -59,13 +65,28 @@ Resources:
         Project: !Ref Project
         Environment: !Ref Environment
         PublicSubnetId: !GetAtt NetworkStack.Outputs.PublicSubnetId
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
         PrivateSubnetId: !GetAtt NetworkStack.Outputs.PrivateSubnetId
         ClientSecurityGroupId: !GetAtt NetworkStack.Outputs.ClientSecurityGroupId
         BackendSecurityGroupId: !GetAtt NetworkStack.Outputs.BackendSecurityGroupId
+        DataSecurityGroupId: !GetAtt NetworkStack.Outputs.DataSecurityGroupId
+        DataVolumeSize: !Ref DataVolumeSize
         SshPublicKey: !Ref SshPublicKey
         # String en el padre; AWS::SSM::Parameter::Value en compute.yaml.
         LatestAmiId: !Ref LatestAmiId
 Outputs:
+  DbAdminInstanceId:
+    Description: Identificador de la EC2 privada para administracion MySQL.
+    Value: !GetAtt ComputeStack.Outputs.DbAdminInstanceId
+  DbAdminPrivateIp:
+    Description: IPv4 privada del administrador.
+    Value: !GetAtt ComputeStack.Outputs.DbAdminPrivateIp
+  DbAdminSecurityGroupId:
+    Description: Grupo exclusivo de administracion creado por compute.
+    Value: !GetAtt ComputeStack.Outputs.DbAdminSecurityGroupId
+  DbAdminSshCommand:
+    Description: SSH a administracion mediante frontend bastion.
+    Value: !GetAtt ComputeStack.Outputs.DbAdminSshCommand
   VpcId:
     Description: VPC del laboratorio; subred y grupos pertenecen a esta VPC.
     Value: !GetAtt NetworkStack.Outputs.VpcId
@@ -105,3 +126,18 @@ Outputs:
   BackendSshCommand:
     Description: SSH al backend privado mediante frontend; la clave privada permanece local.
     Value: !GetAtt ComputeStack.Outputs.BackendSshCommand
+  DataSecurityGroupId:
+    Description: Grupo privado de la EC2 de datos.
+    Value: !GetAtt NetworkStack.Outputs.DataSecurityGroupId
+  DataInstanceId:
+    Description: Identificador de la EC2 de datos privada.
+    Value: !GetAtt ComputeStack.Outputs.DataInstanceId
+  DataPrivateIp:
+    Description: Host privado de MySQL para el backend.
+    Value: !GetAtt ComputeStack.Outputs.DataPrivateIp
+  DataVolumeId:
+    Description: Volumen persistente de datos retenido al borrar el stack.
+    Value: !GetAtt ComputeStack.Outputs.DataVolumeId
+  DataSshCommand:
+    Description: SSH a datos mediante frontend bastion.
+    Value: !GetAtt ComputeStack.Outputs.DataSshCommand

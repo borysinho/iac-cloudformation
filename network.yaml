@@ -222,9 +222,10 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Metadata:
       com.aws.cloudformation.Context:
-        why: Separar MySQL del backend; conexiones de BD desde backend y administracion por bastion frontend.
+        why: Separar MySQL del backend; acceso SQL desde backend y administrador dedicado (regla en compute), y SSH mediante frontend bastion.
         must:
-          - TCP 3306 solo desde el grupo backend; nunca desde frontend ni desde Internet.
+          - TCP 3306 desde backend y desde administracion; nunca desde frontend ni desde Internet.
+          - La regla de administracion pertenece a compute.yaml; conservar su gestion separada y retirar compute antes de network.
           - TCP 22 solo desde el grupo frontend que actua como bastion.
           - Asociar este grupo a la EC2 de datos, sin agregarle grupos que amplien esas entradas.
     Properties:
@@ -267,5 +268,5 @@ Outputs:
     Value: !Ref GlobomaticsBackendSecurityGroup
   # AGREGADO: pasar esta salida al parametro DataSecurityGroupId de compute.yaml.
   DataSecurityGroupId:
-    Description: Grupo de datos; MySQL solo desde backend y SSH mediante frontend.
+    Description: Grupo de datos; MySQL desde backend y administracion (regla en compute); SSH mediante frontend.
     Value: !Ref GlobomaticsDataSecurityGroup
